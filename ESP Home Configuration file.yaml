@@ -5,7 +5,7 @@ substitutions:
   ssid2: <<SSID2>>
   wifi_password2: <<SSID2 Password>>
   log_level: "INFO"
-  
+
   # Strain gauge sensor connections
   dout_pin: '27'
   clk_pin: '25'
@@ -15,7 +15,9 @@ substitutions:
 
   # Timing variables
   update_interval_ms: "400ms" # Scale weight reading update interval
-  proximity_check_delay: '5s' # After how long should the proximity sensor reading be used to cross check for object present on the scale
+  proximity_check_delay: '5s' # How long after an object removal due to weight change 
+                              # should the proximity sensor reading be used to cross check for object present on the scale
+  proximity_check_scheduled_interval: '40s' # How often to schedule periodic proximity check to validate object still present on the scale
   auto_tare_interval: '30s' # Every how often should auto tare take place when no object is present
   tare_time_window: '2s' # Over how many seconds should weight measurements be taken to calculate tare offset
   object_presense_debounce: "800ms" #debounce timeframe - set to 2x or more of the update interval
@@ -378,15 +380,15 @@ sensor:
                 id(final_object_state) = new_object_state;  // Update final_object_state immediately
                 id(object_present).publish_state(new_object_state);  // Update binary sensor
                 ESP_LOGI("weight_change", "Object state changed to: %s", new_object_state ? "ON" : "OFF");
-              }
-              // Cancel any existing proximity check scripts
-              id(proximity_check_script).stop();
+                
+                // Cancel any existing proximity check scripts
+                id(proximity_check_script).stop();
 
-              // Start proximity check script
-              if(id(enable_proximity_for_removal_state)){
-                id(proximity_check_script).execute();
+                // Start proximity check script
+                if(id(enable_proximity_for_removal_state)){
+                  id(proximity_check_script).execute();
+                }
               }
-              
             } else {
               ESP_LOGI("weight_change", "Tare in progress. Skipping object detection.");
             }
@@ -415,8 +417,25 @@ binary_sensor:
                 id: light_id
                 effect: "Blinking Red"
 
-# Interval for auto tare when no object is present
+
 interval:
+  - interval: ${proximity_check_scheduled_interval}
+    then:
+      - lambda: |-
+          if (id(tare_in_progress)) {
+            ESP_LOGI("Proximity Check", "Tare in progress. Skipping auto-tare.");
+            return;
+          }
+          ESP_LOGI("Proximity Check", "Running scheduled proximity check");
+          // Cancel any existing proximity check scripts
+          id(proximity_check_script).stop();
+          
+          // Start proximity check script
+          if(id(enable_proximity_for_removal_state)){
+            id(proximity_check_script).execute();
+          }
+          
+# Interval for auto tare when no object is present
   - interval: ${auto_tare_interval}
     then:
       - lambda: |-
@@ -479,12 +498,16 @@ script:
       - delay: ${proximity_check_delay}
       - lambda: |-
           bool proximity_above_threshold = id(proximity).state >= id(proximity_threshold).state;
+          ESP_LOGI("proximity_check", "Proximity check script running...");
           if (id(object_state)) {
             // Object was added, verify proximity sensor
             if (!proximity_above_threshold) {
               // Proximity sensor does not detect object, reset state and tare
               ESP_LOGI("proximity_check", "Proximity check failed after addition. Executing Tare and resetting object state.");
               // Tare the scale
+              id(object_state) = false;
+              id(final_object_state) = false;
+              id(object_present).publish_state(false);
               id(tare_script).execute();
               ESP_LOGI("proximity_check", "Tare complete. Moving to set object state");
               id(object_state) = false;
@@ -510,3 +533,4 @@ script:
             }
           }
             
+
