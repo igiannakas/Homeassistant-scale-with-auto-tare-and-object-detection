@@ -18,6 +18,7 @@ substitutions:
   proximity_check_delay: '5s' # After how long should the proximity sensor reading be used to cross check for object present on the scale
   auto_tare_interval: '30s' # Every how often should auto tare take place when no object is present
   tare_time_window: '2s' # Over how many seconds should weight measurements be taken to calculate tare offset
+  object_presense_debounce: "800ms" #debounce timeframe - set to 2x or more of the update interval
 
 esphome:
   name: auto-tare-scale
@@ -104,6 +105,19 @@ light:
             - state: False
               duration: 1000ms
               transition_length: 1000ms
+      - strobe:
+          name: "Rapid white flashing"
+          colors:
+            - state: True
+              brightness: 100%
+              red: 100%
+              green: 100%
+              blue: 100%
+              duration: 100ms
+              transition_length: 100ms
+            - state: False
+              duration: 100ms
+              transition_length: 100ms
 
 # Expose Thresholds to Home Assistant
 number:
@@ -261,8 +275,8 @@ sensor:
             - 317899 -> 400
             - 338674 -> 500  # Calibration point for 500 grams
       - median:
-          window_size: 5
-          send_every: 2
+          window_size: 3
+          send_every: 1
           send_first_at: 1
       - lambda: |-
           if (id(tare_in_progress)) {
@@ -333,14 +347,14 @@ sensor:
     update_interval: ${update_interval_ms}
     filters:
       - sliding_window_moving_average:
-          window_size: 5
+          window_size: 2
           send_every: 1
     on_value:
       then:
         - lambda: |-
             float delta_time = (millis() - id(last_tare_time)) / 1000.0;
             
-            if (!id(tare_in_progress) && delta_time > 2.0) {  // Suspend detection during tare and for 2 seconds after tare is complete to avoid false detections
+            if (!id(tare_in_progress) && delta_time > 2.5) {  // Suspend detection during tare and for 2.0 seconds after tare is complete to avoid false detections
               float rate = x;
 
               // Get thresholds from number components
@@ -364,15 +378,15 @@ sensor:
                 id(final_object_state) = new_object_state;  // Update final_object_state immediately
                 id(object_present).publish_state(new_object_state);  // Update binary sensor
                 ESP_LOGI("weight_change", "Object state changed to: %s", new_object_state ? "ON" : "OFF");
-
-                // Cancel any existing proximity check scripts
-                id(proximity_check_script).stop();
-
-                // Start proximity check after specified delay
-                if(id(enable_proximity_for_removal_state)){
-                    id(proximity_check_script).execute();
-                }
               }
+              // Cancel any existing proximity check scripts
+              id(proximity_check_script).stop();
+
+              // Start proximity check script
+              if(id(enable_proximity_for_removal_state)){
+                id(proximity_check_script).execute();
+              }
+              
             } else {
               ESP_LOGI("weight_change", "Tare in progress. Skipping object detection.");
             }
@@ -383,6 +397,8 @@ binary_sensor:
     id: object_present
     lambda: |-
       return id(final_object_state);
+    filters:
+      - delayed_on_off: ${object_presense_debounce}
     on_state:
       - if:
           condition:
@@ -431,6 +447,9 @@ script:
   - id: tare_script
     mode: single
     then:
+      - light.turn_on:
+          id: light_id
+          effect: "Rapid white flashing"
       - lambda: |-
           id(tare_weight_sum) = 0.0;
           id(tare_weight_count) = 0;
@@ -445,6 +464,9 @@ script:
           id(tare_in_progress) = false;  // Indicate tare is complete
           id(last_tare_time) = millis(); // Set the last tare timestamp
           ESP_LOGI("tare_script", "Tare completed. New offset: %f", id(tare_offset));
+      - light.turn_on:
+          id: light_id
+          effect: "Blinking Red"
 
   - id: proximity_check_script
     mode: restart
