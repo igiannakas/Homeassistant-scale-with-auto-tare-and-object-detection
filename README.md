@@ -7,7 +7,7 @@ It features weight measurement, object detection using both weight change and a 
 
 ## Table of Contents
 - [Features](#features)
-- [Possible Use Cases](#possible-use-cases)
+- [Use Cases](#use-cases)
 - [Required Components](#required-components)
 - [Sourcing Components](#sourcing-components)
 - [Hardware Setup](#hardware-setup)
