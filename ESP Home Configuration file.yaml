@@ -1,0 +1,490 @@
+substitutions:  
+  ssid1: <<SSID1>>
+  wifi_password1: <<SSID1 Password>>
+
+  ssid2: <<SSID2>>
+  wifi_password2: <<SSID2 Password>>
+  log_level: "INFO"
+  
+  # Strain gauge sensor connections
+  dout_pin: '27'
+  clk_pin: '25'
+  
+  # Neopixel data pin connection
+  neopixel_pin: '16'
+
+  # Timing variables
+  update_interval_ms: "400ms" # Scale weight reading update interval
+  proximity_check_delay: '5s' # After how long should the proximity sensor reading be used to cross check for object present on the scale
+  auto_tare_interval: '30s' # Every how often should auto tare take place when no object is present
+  tare_time_window: '2s' # Over how many seconds should weight measurements be taken to calculate tare offset
+
+esphome:
+  name: auto-tare-scale
+
+esp32:
+  board: wemos_d1_mini32
+  framework:
+    type: arduino
+
+api:
+  password: ""
+
+ota:
+  - platform: esphome
+    password: ""
+
+wifi:
+  networks:
+    - ssid: "${ssid1}"
+      password: "${wifi_password1}"
+    - ssid: "${ssid2}"
+      password: "${wifi_password2}"
+
+  # Enable fallback hotspot (captive portal) in case Wi-Fi connection fails
+  ap:
+    ssid: "Scale"
+    password: "${wifi_password1}"
+
+captive_portal:
+
+web_server:
+  port: 80
+  version: 2
+  include_internal: true
+
+http_request:
+  verify_ssl: false
+
+# Enable logging
+logger:
+  level: ${log_level}
+
+i2c:
+  sda: 18
+  scl: 19
+  scan: true
+
+apds9960:
+  address: 0x39
+  update_interval: 500ms  # Faster updates for responsive detection
+
+light:
+  - platform: neopixelbus
+    type: GRB
+    variant: WS2811
+    pin: ${neopixel_pin}
+    num_leds: 1
+    name: "Light"
+    id: light_id
+    effects:
+      - strobe:
+          name: "Blinking Red"
+          colors:
+            - state: True
+              brightness: 100%
+              red: 100%
+              green: 0%
+              blue: 0%
+              duration: 1200ms
+              transition_length: 1000ms
+            - state: False
+              duration: 1000ms
+              transition_length: 1000ms
+      - strobe:
+          name: "Blinking Green"
+          colors:
+            - state: True
+              brightness: 100%
+              red: 0%
+              green: 100%
+              blue: 0%
+              duration: 1200ms
+              transition_length: 1000ms
+            - state: False
+              duration: 1000ms
+              transition_length: 1000ms
+
+# Expose Thresholds to Home Assistant
+number:
+  - platform: template
+    name: "Add Object Threshold"
+    id: add_object_threshold_number
+    min_value: 0.0
+    max_value: 100.0
+    initial_value: 20
+    step: 0.1
+    unit_of_measurement: "g/s"
+    optimistic: true
+    restore_value: true
+    mode: box
+    entity_category: config
+
+  - platform: template
+    name: "Remove Object Threshold"
+    id: remove_object_threshold_number
+    min_value: -100.0
+    max_value: 0.0
+    initial_value: -20
+    step: 0.1
+    unit_of_measurement: "g/s"
+    optimistic: true
+    restore_value: true
+    mode: box
+    entity_category: config
+
+  - platform: template
+    name: "Proximity Threshold"
+    id: proximity_threshold
+    min_value: 0.0
+    max_value: 255.0
+    initial_value: 10  # Set a reasonable default
+    step: 1.0
+    unit_of_measurement: ""
+    optimistic: true
+    restore_value: true
+    mode: box
+    entity_category: config
+
+# Expose Auto Tare Switch to Home Assistant
+switch:
+  - platform: template
+    name: "Auto Tare"
+    id: enable_auto_tare
+    optimistic: true
+    entity_category: config
+    restore_mode: RESTORE_DEFAULT_OFF
+    turn_on_action:
+      - lambda: |-
+          id(enable_auto_tare_state) = true;
+          id(enable_auto_tare).publish_state(true);
+    turn_off_action:
+      - lambda: |-
+          id(enable_auto_tare_state) = false;
+          id(enable_auto_tare).publish_state(false);
+    lambda: |-
+      return id(enable_auto_tare_state);
+
+  - platform: template
+    name: "Use proximity sensor to confirm object removal"
+    id: enable_proximity_for_removal
+    optimistic: true
+    entity_category: config
+    restore_mode: RESTORE_DEFAULT_OFF
+    turn_on_action:
+      - lambda: |-
+          id(enable_proximity_for_removal_state) = true;
+          id(enable_proximity_for_removal).publish_state(true);
+    turn_off_action:
+      - lambda: |-
+          id(enable_proximity_for_removal_state) = false;
+          id(enable_proximity_for_removal).publish_state(false);
+    lambda: |-
+      return id(enable_proximity_for_removal);
+
+globals:
+  - id: object_state
+    type: bool
+    restore_value: true
+    initial_value: 'false'
+
+  - id: tare_offset
+    type: float
+    restore_value: true
+    initial_value: '0.0'
+
+  - id: tare_in_progress
+    type: bool
+    restore_value: false
+    initial_value: 'false'
+
+  - id: tare_weight_sum
+    type: float
+    restore_value: false
+    initial_value: '0.0'
+
+  - id: tare_weight_count
+    type: int
+    restore_value: false
+    initial_value: '0'
+
+  - id: load_cell_raw_value
+    type: float
+    restore_value: false
+    initial_value: '0.0'
+
+  - id: enable_auto_tare_state
+    type: bool
+    restore_value: true
+    initial_value: 'false'  # Set initial state to false
+
+  - id: enable_proximity_for_removal_state
+    type: bool
+    restore_value: true
+    initial_value: 'true'  # Set initial state to false
+
+  - id: last_tare_time
+    type: uint32_t
+    restore_value: false
+    initial_value: '0'
+
+  - id: final_object_state
+    type: bool
+    restore_value: true
+    initial_value: 'false'
+
+sensor:
+  - platform: apds9960
+    type: PROXIMITY
+    name: "Object proximity"
+    id: proximity
+
+  - platform: hx711
+    name: "Weight"
+    id: load_cell_weight
+    dout_pin: ${dout_pin}
+    clk_pin: ${clk_pin}
+    gain: 128
+    update_interval: ${update_interval_ms}
+    filters:
+      - lambda: |-
+          // Capture the raw value before any other filters
+          id(load_cell_raw_value) = x;
+          return x;
+      - calibrate_polynomial:
+          degree: 2
+          datapoints:
+            - 235839 -> 0     # Calibration point for 0 grams
+            - 256492 -> 100
+            - 277272 -> 201
+            - 297404 -> 300
+            - 317899 -> 400
+            - 338674 -> 500  # Calibration point for 500 grams
+      - median:
+          window_size: 5
+          send_every: 2
+          send_first_at: 1
+      - lambda: |-
+          if (id(tare_in_progress)) {
+            id(tare_weight_sum) += x;
+            id(tare_weight_count) += 1;
+          }
+          return x - id(tare_offset);
+    unit_of_measurement: "g"
+    accuracy_decimals: 0
+    force_update: false  # Ensure updates are sent to Home Assistant
+
+  # Template sensor to expose the raw value
+  - platform: template
+    name: "Load Cell Raw Value"
+    id: load_cell_raw
+    internal: true
+    filters:
+      - sliding_window_moving_average:
+          window_size: 20
+          send_every: 10
+          send_first_at: 1
+    lambda: |-
+      return id(load_cell_raw_value);
+    accuracy_decimals: 0
+    update_interval: ${update_interval_ms}
+    force_update: false
+
+  # Rate of change of weight, used to trigger object placed detection
+  - platform: template
+    name: "Weight Change Rate"
+    id: weight_change_rate
+    internal: true
+    unit_of_measurement: "g/s"
+    accuracy_decimals: 1
+    lambda: |-
+      static float last_value = 0.0;
+      static uint32_t last_time = 0;
+      float current_value = id(load_cell_weight).state;
+      uint32_t current_time = millis();
+
+      // Initialize on first run
+      if (last_time == 0) {
+        last_value = current_value;
+        last_time = current_time;
+        return 0.0;
+      }
+      
+      if (id(tare_in_progress)) { 
+        last_value = current_value;
+        last_time = current_time;
+        return 0.0;
+      }
+
+      float delta_value = current_value - last_value;
+      float delta_time = (current_time - last_time) / 1000.0;  // Convert ms to s
+
+      // Update for next calculation
+      last_value = current_value;
+      last_time = current_time;
+
+      // Prevent division by zero
+      if (delta_time == 0) {
+        return 0.0;
+      }
+
+      float rate = delta_value / delta_time;
+      return rate;
+    update_interval: ${update_interval_ms}
+    filters:
+      - sliding_window_moving_average:
+          window_size: 5
+          send_every: 1
+    on_value:
+      then:
+        - lambda: |-
+            float delta_time = (millis() - id(last_tare_time)) / 1000.0;
+            
+            if (!id(tare_in_progress) && delta_time > 2.0) {  // Suspend detection during tare and for 2 seconds after tare is complete to avoid false detections
+              float rate = x;
+
+              // Get thresholds from number components
+              const float add_threshold = id(add_object_threshold_number).state;
+              const float remove_threshold = id(remove_object_threshold_number).state;
+
+              bool previous_object_state = id(object_state);
+              bool new_object_state = id(object_state);
+
+              if (rate > add_threshold) {
+                // Weight has increased rapidly; object potentially added
+                new_object_state = true;
+              } else if (rate < remove_threshold) {
+                // Weight has decreased rapidly; object potentially removed
+                new_object_state = false;
+              }
+
+              if (new_object_state != previous_object_state) {
+                // Object state has changed
+                id(object_state) = new_object_state;
+                id(final_object_state) = new_object_state;  // Update final_object_state immediately
+                id(object_present).publish_state(new_object_state);  // Update binary sensor
+                ESP_LOGI("weight_change", "Object state changed to: %s", new_object_state ? "ON" : "OFF");
+
+                // Cancel any existing proximity check scripts
+                id(proximity_check_script).stop();
+
+                // Start proximity check after specified delay
+                if(id(enable_proximity_for_removal_state)){
+                    id(proximity_check_script).execute();
+                }
+              }
+            } else {
+              ESP_LOGI("weight_change", "Tare in progress. Skipping object detection.");
+            }
+
+binary_sensor:
+  - platform: template
+    name: "Object present"
+    id: object_present
+    lambda: |-
+      return id(final_object_state);
+    on_state:
+      - if:
+          condition:
+            lambda: 'return x;'
+          then:
+            - light.turn_on:
+                id: light_id
+                red: 0%
+                green: 100%
+                blue: 0%
+                effect: None  # Stops any running effects
+          else:
+            - light.turn_on:
+                id: light_id
+                effect: "Blinking Red"
+
+# Interval for auto tare when no object is present
+interval:
+  - interval: ${auto_tare_interval}
+    then:
+      - lambda: |-
+          if (id(tare_in_progress)) {
+            ESP_LOGI("Auto Tare", "Tare in progress. Skipping auto-tare.");
+            return;
+          }
+          if (!id(object_state) && (id(proximity).state < id(proximity_threshold).state)) {
+            if (id(enable_auto_tare_state)) {
+              ESP_LOGI("Auto Tare", "No object detected. Executing tare_script.");
+              id(tare_script).execute();
+            }
+          }
+
+button:
+  - platform: restart
+    name: Restart device
+    id: restart_internal
+    entity_category: config
+
+  - platform: template
+    name: "Tare"
+    id: tare_button
+    on_press:
+      - script.execute: tare_script
+
+script:
+  - id: tare_script
+    mode: single
+    then:
+      - lambda: |-
+          id(tare_weight_sum) = 0.0;
+          id(tare_weight_count) = 0;
+          id(tare_in_progress) = true;  // Indicate tare is starting
+      - delay: ${tare_time_window}
+      - lambda: |-
+          if (id(tare_weight_count) > 0) {
+            id(tare_offset) = id(tare_weight_sum) / id(tare_weight_count);
+          } else {
+            id(tare_offset) = 0.0;
+          }
+          id(tare_in_progress) = false;  // Indicate tare is complete
+          id(last_tare_time) = millis(); // Set the last tare timestamp
+          ESP_LOGI("tare_script", "Tare completed. New offset: %f", id(tare_offset));
+
+  - id: proximity_check_script
+    mode: restart
+    then:
+      - lambda: |-
+          if (id(tare_in_progress)) {
+            ESP_LOGI("proximity_check", "Tare in progress. Skipping proximity check.");
+            return;
+          }
+      - delay: ${proximity_check_delay}
+      - lambda: |-
+          bool proximity_above_threshold = id(proximity).state >= id(proximity_threshold).state;
+          if (id(object_state)) {
+            // Object was added, verify proximity sensor
+            if (!proximity_above_threshold) {
+              // Proximity sensor does not detect object, reset state and tare
+              ESP_LOGI("proximity_check", "Proximity check failed after addition. Executing Tare and resetting object state.");
+              // Tare the scale
+              id(tare_script).execute();
+              ESP_LOGI("proximity_check", "Tare complete. Moving to set object state");
+              id(object_state) = false;
+              id(final_object_state) = false;
+              id(object_present).publish_state(false);
+            } else {
+              // Proximity sensor confirms object presence
+              // State remains as is
+              ESP_LOGI("proximity_check", "Proximity check passed after addition. Object state confirmed.");
+            }
+          } else {
+            // Object was removed, verify proximity sensor
+            if (proximity_above_threshold) {
+              // Proximity sensor still detects object, reset state to ON
+              id(object_state) = true;
+              id(final_object_state) = true;
+              id(object_present).publish_state(true);
+              ESP_LOGI("proximity_check", "Proximity check failed after removal. Resetting object state to ON.");
+            } else {
+              // Proximity sensor confirms object removal
+              // State remains as is
+              ESP_LOGI("proximity_check", "Proximity check passed after removal. Object state confirmed as OFF.");
+            }
+          }
+            
