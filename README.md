@@ -79,6 +79,10 @@ Optional: Enclosure or housing for the scale. An enclosure STL, STEP and F3D fil
 4. Add the device to Home Assistant if using it.
 
 ## Calibration and Configuration
+
+### Exposed entities in Home Assistant
+![image](https://github.com/user-attachments/assets/5e84ce88-1a3e-4f8b-b7a9-ea0d51a7e9aa)
+
 ### Load Cell Calibration
 - Place known weights on the scale and record raw values.
 - Adjust calibration data points in the `hx711` sensor configuration.
@@ -90,12 +94,14 @@ Optional: Enclosure or housing for the scale. An enclosure STL, STEP and F3D fil
 
 ## Additional Notes
 ### Understanding the Logic
-- Object detection is based on weight change and proximity confirmation.
-- Auto-tare ensures consistent zero-point calibration.
+- Object detection is based on weight change and proximity confirmation. The initial object detection is done based on rapid weight change, when an object is lifted or placed on the scale. The rate of weight change is controlled by the Add and Remove object threshold values.
+- If enabled, the proximity sensor is used to confirm whether an object is trully removed from the scale. After the configured delay, it checks the proximity sensor reading against the proximity threshold and if below, it assumes there is no object present on the scale
+- If enabled, it can auto-tare the device when the proximity sensor reads below the proximity threshold after the configured time has passed. This is usefull for automatic setting of the zero-point calibration when the scale is empty, as seen by the proximity sensor. 
 
 ### Visual Feedback
-- Green Light: Object detected.
-- Blinking Red Light: No object detected.
+- Green Light: Object detected on the scale
+- Blinking Red Light: No object detected on the scale
+- LED is exposed to Homeassistant for control via automations
 
 ### Troubleshooting Tips
 - Inconsistent readings: Ensure stable mounting of the load cell.
