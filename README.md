@@ -71,7 +71,6 @@ Optional: Enclosure or housing for the scale. An enclosure STL, STEP and F3D fil
 ## Software Installation
 ### Prerequisites
 - Install [ESPHome](https://esphome.io) on your computer or Home Assistant.
-- Optional: Home Assistant for full integration.
 
 ### Steps
 1. Download the ESPHome configuration file.
